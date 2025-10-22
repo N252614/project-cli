@@ -18,7 +18,6 @@ def _load_users_as_models() -> list[User]:
         try:
             users.append(User.from_dict(d))
         except Exception:
-            # Skip broken entries quietly
             continue
     return users
 
@@ -42,7 +41,7 @@ def _save_projects_from_models(projects: list[Project]) -> None:
     storage.save_projects([p.to_dict() for p in projects])
 
 def _find_user_by_name(users: list[User], name: str) -> Optional[User]:
-    """Case-insensitive user search by name."""
+    """Find user by name (case-insensitive)."""
     name_norm = name.strip().lower()
     for u in users:
         if u.name.strip().lower() == name_norm:
@@ -50,16 +49,14 @@ def _find_user_by_name(users: list[User], name: str) -> Optional[User]:
     return None
 
 def _is_iso_date(value: str) -> bool:
-    """ ISO date validator: YYYY-MM-DD."""
+    """Simple check for date format YYYY-MM-DD."""
     return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value))
 
 def build_parser() -> argparse.ArgumentParser:
-    """
-    Build the top-level CLI parser with subcommands.
-    """
+    """Define CLI structure and available subcommands."""
     parser = argparse.ArgumentParser(
         prog="project-cli",
-        description="CLI tool to manage users, projects, and task."
+        description=" CLI tool to manage users and projects."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -82,7 +79,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_list_projects = subparsers.add_parser("list-projects", help="List projects (optionally by user)")
     p_list_projects.add_argument("--user", required=False, help="Filter by user name")
 
-    # future stubs 
+    # future stubs
     subparsers.add_parser("add-task", help="(stub) Add a task to a project")
     subparsers.add_parser("list-tasks", help="(stub) List tasks for a project")
     subparsers.add_parser("complete-task", help="(stub) Mark a task as completed")
@@ -90,9 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 def cmd_add_user(name: str, email: str | None) -> None:
-    """
-  Implementation using raw dicts via utils.storage.
-    """
+    """Add new user to JSON."""
     users = storage.load_users()
     new_id = (max([u.get("id", 0) for u in users]) + 1) if users else 1
     users.append({"id": new_id, "name": name, "email": email})
@@ -100,17 +95,16 @@ def cmd_add_user(name: str, email: str | None) -> None:
     info(f"User created: id={new_id}, name='{name}'")
 
 def cmd_list_users() -> None:
+    """Display all users in table."""
     users = storage.load_users()
     if not users:
         warn("No users yet.")
         return
     rows = [[u.get("id"), u.get("name"), u.get("email") or "—"] for u in users]
-    table("Users", ["ID", "Name", "Email"], rows)
+    table ("Users", ["ID", "Name", "Email"], rows)
 
 def cmd_add_project(user_name: str, title: str, description: str | None, due_date: str | None) -> None:
-    """
-    Find the user by name, create Project bound to the user, and save it.
-    """
+    """Add a new project assigned to a specific user."""
     users = _load_users_as_models()
     user = _find_user_by_name(users, user_name)
     if not user:
@@ -123,3 +117,76 @@ def cmd_add_project(user_name: str, title: str, description: str | None, due_dat
     projects = _load_projects_as_models()
     project = Project(title=title, user_id=user.id, description=description, due_date=due_date)
     projects.append(project)
+    _save_projects_from_models(projects)
+
+    info(f"Project created: id={project.id}, title='{project.title}', owner='{user.name}'")
+
+def cmd_list_projects(user_name: str | None) -> None:
+    """List all projects or filter by user."""
+    users = _load_users_as_models()
+    user_by_id = {u.id: u for u in users}
+
+    owner_filter_id: Optional[int] = None
+    if user_name:
+        user = _find_user_by_name(users, user_name)
+        if not user:
+            warn(f"No such user '{user_name}'.")
+            table("Projects", ["ID", "Title", "Owner", "Due", "Description"], [])
+            return
+        owner_filter_id = user.id
+
+    projects = _load_projects_as_models()
+    if owner_filter_id is not None:
+        projects = [p for p in projects if p.user_id == owner_filter_id]
+
+    if not projects:
+        warn("No projects yet.")
+        return
+
+    rows = []
+    for p in projects:
+        owner = user_by_id.get(p.user_id)
+        owner_name = owner.name if owner else f"#{p.user_id}"
+        rows.append([p.id, p.title, owner_name, p.due_date or "—", (p.description or "—")[:60]])
+
+    table("Projects", ["ID", "Title", "Owner", "Due", "Description"], rows)
+
+def main(argv: List[str] | None = None) -> int:
+    """CLI entry point."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    if args.command == "add-user":
+        cmd_add_user(args.name, args.email)
+        return 0
+
+    if args.command == "list-users":
+        cmd_list_users()
+        return 0
+
+    if args.command == "add-project":
+        cmd_add_project(args.user, args.title, args.description, args.due_date)
+        return 0
+
+    if args.command == "list-projects":
+        cmd_list_projects(args.user)
+        return 0
+
+    # Stubs 
+    if args.command == "add-task":
+        warn("This command is a stub.")
+        return 0
+
+    if args.command == "list-tasks":
+        warn("This command is a stub.")
+        return 0
+
+    if args.command == "complete-task":
+        warn("This command is a stub.")
+        return 0
+
+    error("Unknown command.")
+    return 1
+
+if __name__ == "__main__":
+    raise SystemExit(main())
