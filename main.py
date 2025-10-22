@@ -9,6 +9,7 @@ from utils import storage
 # Import model classes
 from models.user import User
 from models.project import Project
+from models.task import Task
 
 def _load_users_as_models() -> list[User]:
     """Load users.json and convert dicts to User models."""
@@ -21,10 +22,6 @@ def _load_users_as_models() -> list[User]:
             continue
     return users
 
-def _save_users_from_models(users: list[User]) -> None:
-    """Serialize User models to dicts and save to users.json."""
-    storage.save_users([u.to_dict() for u in users])
-
 def _load_projects_as_models() -> list[Project]:
     """Load projects.json and convert dicts to Project models."""
     projects_raw = storage.load_projects()
@@ -36,9 +33,24 @@ def _load_projects_as_models() -> list[Project]:
             continue
     return projects
 
+def _load_tasks_as_models() -> list[Task]:
+    """Load tasks.json and convert dicts to Task models."""
+    tasks_raw = storage.load_tasks()
+    tasks: list[Task] = []
+    for d in tasks_raw:
+        try:
+            tasks.append(Task.from_dict(d))
+        except Exception:
+            continue
+    return tasks
+
 def _save_projects_from_models(projects: list[Project]) -> None:
     """Serialize Project models to dicts and save to projects.json."""
     storage.save_projects([p.to_dict() for p in projects])
+
+def _save_tasks_from_models(tasks: list[Task]) -> None:
+    """Serialize Task models to dicts and save to tasks.json."""
+    storage.save_tasks([t.to_dict() for t in tasks])    
 
 def _find_user_by_name(users: list[User], name: str) -> Optional[User]:
     """Find user by name (case-insensitive)."""
@@ -46,6 +58,14 @@ def _find_user_by_name(users: list[User], name: str) -> Optional[User]:
     for u in users:
         if u.name.strip().lower() == name_norm:
             return u
+    return None
+
+def _find_project_by_title(projects: list[Project], title: str) -> Optional[Project]:
+    """Find project by title (case-insensitive)."""
+    title_norm = title.strip().lower()
+    for p in projects:
+        if p.title.strip().lower() == title_norm:
+            return p
     return None
 
 def _is_iso_date(value: str) -> bool:
@@ -79,10 +99,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_list_projects = subparsers.add_parser("list-projects", help="List projects (optionally by user)")
     p_list_projects.add_argument("--user", required=False, help="Filter by user name")
 
-    # future stubs
-    subparsers.add_parser("add-task", help="(stub) Add a task to a project")
-    subparsers.add_parser("list-tasks", help="(stub) List tasks for a project")
-    subparsers.add_parser("complete-task", help="(stub) Mark a task as completed")
+    # tasks
+    p_add_task = subparsers.add_parser("add-task", help="Add a task to a project")
+    p_add_task.add_argument("--project", required=True, help="Project title (exact)")
+    p_add_task.add_argument("--title", required=True, help="Task title")
+    p_add_task.add_argument("--assigned-to", required=False, help="User name to assign (optional)")
+
+    p_list_tasks = subparsers.add_parser("list-tasks", help="List tasks (optionally by project)")
+    p_list_tasks.add_argument("--project", required=False, help="Filter by project title")
+
+    p_complete_task = subparsers.add_parser("complete-task", help="Mark a task as completed")
+    p_complete_task.add_argument("--id", type=int, required=True, help="Task id")
 
     return parser
 
@@ -151,6 +178,85 @@ def cmd_list_projects(user_name: str | None) -> None:
 
     table("Projects", ["ID", "Title", "Owner", "Due", "Description"], rows)
 
+def cmd_add_task(project_title: str, title: str, assigned_to_name: str | None) -> None:
+    """Create a task inside a project and optionally assign to a user."""
+    projects = _load_projects_as_models()
+    project = _find_project_by_title(projects, project_title)
+    if not project:
+        error(f"Project '{project_title}' not found.")
+        return
+
+    assigned_to = None
+    if assigned_to_name:
+        users = _load_users_as_models()
+        user = _find_user_by_name(users, assigned_to_name)
+        if not user:
+            warn(f"User '{assigned_to_name}' not found. Task will be unassigned.")
+        else:
+            assigned_to = user.id
+
+    tasks = _load_tasks_as_models()
+    task = Task(project_id=project.id, title=title, assigned_to=assigned_to)
+    tasks.append(task)
+    _save_tasks_from_models(tasks)
+
+    info(f"Task added: '{task.title}' for project '{project.title}'")
+
+
+def cmd_list_tasks(project_title: str | None) -> None:
+    """List tasks, optionally filter by project title."""
+    tasks = _load_tasks_as_models()
+    if not tasks:
+        warn("No tasks yet.")
+        return
+
+    projects = _load_projects_as_models()
+    users = _load_users_as_models()
+    project_by_id = {p.id: p for p in projects}
+    user_by_id = {u.id: u for u in users}
+
+    if project_title:
+        project = _find_project_by_title(projects, project_title)
+        if not project:
+            warn(f"No such project '{project_title}'.")
+            return
+        tasks = [t for t in tasks if t.project_id == project.id]
+
+    if not tasks:
+        warn("No tasks yet.")
+        return
+
+    rows = []
+    for t in tasks:
+        proj = project_by_id.get(t.project_id)
+        assignee = user_by_id.get(t.assigned_to) if t.assigned_to else None
+        rows.append([
+            t.id,
+            t.title,
+            proj.title if proj else "?",
+            assignee.name if assignee else "—",
+            t.status
+        ])
+    table("Tasks", ["ID", "Title", "Project", "Assigned To", "Status"], rows)
+
+
+def cmd_complete_task(task_id: int) -> None:
+    """Mark task as done by id."""
+    tasks = _load_tasks_as_models()
+    found = False
+    for t in tasks:
+        if t.id == task_id:
+            t.mark_done()
+            found = True
+            break
+
+    if not found:
+        error(f"No task with id={task_id}")
+        return
+
+    _save_tasks_from_models(tasks)
+    info(f"Task #{task_id} marked as done!")
+
 def main(argv: List[str] | None = None) -> int:
     """CLI entry point."""
     parser = build_parser()
@@ -172,17 +278,16 @@ def main(argv: List[str] | None = None) -> int:
         cmd_list_projects(args.user)
         return 0
 
-    # Stubs 
     if args.command == "add-task":
-        warn("This command is a stub.")
+        cmd_add_task(args.project, args.title, args.assigned_to)
         return 0
 
     if args.command == "list-tasks":
-        warn("This command is a stub.")
+        cmd_list_tasks(args.project)
         return 0
 
     if args.command == "complete-task":
-        warn("This command is a stub.")
+        cmd_complete_task(args.id)
         return 0
 
     error("Unknown command.")
